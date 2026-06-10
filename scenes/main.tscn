@@ -1,31 +1,230 @@
-[gd_scene format=3 uid="uid://ci2hq046jwvqr"]
+[gd_scene format=3 uid="uid://b5qsim3main01"]
 
-[sub_resource type="ProceduralSkyMaterial" id="ProceduralSkyMaterial_sgp6g"]
+[ext_resource type="Script" uid="uid://dm5gsxjy1opnk" path="res://scripts/main.gd" id="1_main"]
+[ext_resource type="Script" uid="uid://b4uyp1bv1ln6e" path="res://scripts/simulation_manager.gd" id="2_simman"]
+[ext_resource type="Script" uid="uid://cqmribohdq03" path="res://scripts/tsunami.gd" id="3_tsunami"]
+[ext_resource type="Script" uid="uid://sj1yx62hwpwe" path="res://scripts/camera.gd" id="4_camera"]
+[ext_resource type="PackedScene" uid="uid://dr2lugtumvgmc" path="res://assets/models/scene.gltf" id="5_city"]
+[ext_resource type="Script" uid="uid://cibohl1q624ko" path="res://scripts/player.gd" id="6_player"]
 
-[sub_resource type="Sky" id="Sky_sgp6g"]
-sky_material = SubResource("ProceduralSkyMaterial_sgp6g")
+[sub_resource type="PhysicalSkyMaterial" id="PhysicalSkyMaterial_tefeu"]
+rayleigh_color = Color(0.26804188, 0.23270682, 1, 1)
 
-[sub_resource type="Environment" id="Environment_o5qli"]
+[sub_resource type="Sky" id="Sky_o6xl0"]
+sky_material = SubResource("PhysicalSkyMaterial_tefeu")
+
+[sub_resource type="Environment" id="1_env"]
 background_mode = 2
-background_energy_multiplier = 3.39
-sky = SubResource("Sky_sgp6g")
-ambient_light_source = 3
-ambient_light_color = Color(0.08246864, 0.17914715, 0.4548418, 1)
+sky = SubResource("Sky_o6xl0")
+ambient_light_source = 2
+ambient_light_color = Color(0.62, 0.72, 0.9, 1)
+ambient_light_energy = 1.4
+tonemap_mode = 2
+tonemap_exposure = 1.15
+tonemap_white = 6.0
+glow_enabled = true
+glow_intensity = 0.35
+glow_bloom = 0.08
 
-[sub_resource type="PlaneMesh" id="PlaneMesh_0wfyh"]
-size = Vector2(200, 200)
+[sub_resource type="BoxShape3D" id="4_ground_shape"]
+size = Vector3(700, 2, 700)
 
-[node name="Main" type="Node3D" unique_id=886902928]
+[sub_resource type="BoxShape3D" id="box_paramount"]
+size = Vector3(0.43, 0.31, 0.21)
 
-[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=1430674997]
-environment = SubResource("Environment_o5qli")
+[sub_resource type="BoxShape3D" id="box_gunshop"]
+size = Vector3(0.73, 0.26, 0.3)
 
-[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1519553852]
-transform = Transform3D(0.70710677, -0.49999997, 0.49999997, 0, 0.70710677, 0.70710677, -0.70710677, -0.49999997, 0.49999997, 0, 0, 0)
-light_energy = 2.577
+[sub_resource type="BoxShape3D" id="box_liquor"]
+size = Vector3(0.31, 0.19, 0.18)
 
-[node name="Camera3D" type="Camera3D" parent="." unique_id=1870809327]
-transform = Transform3D(1, 0, 0, 0, 0.99999994, 0, 0, 0, 0.99999994, 0, 50, 50)
+[sub_resource type="BoxShape3D" id="box_housing"]
+size = Vector3(1.1, 0.19, 1.41)
 
-[node name="MeshInstance3D" type="MeshInstance3D" parent="." unique_id=1343384366]
-mesh = SubResource("PlaneMesh_0wfyh")
+[sub_resource type="BoxShape3D" id="box_clinic"]
+size = Vector3(0.38, 0.2, 0.19)
+
+[sub_resource type="BoxShape3D" id="box_laundrette"]
+size = Vector3(1.4, 0.22, 1.06)
+
+[sub_resource type="BoxShape3D" id="box_fishfactory"]
+size = Vector3(1.49, 0.34, 0.18)
+
+[sub_resource type="BoxShape3D" id="box_pawnshop"]
+size = Vector3(0.93, 0.15, 1.04)
+
+[sub_resource type="CapsuleMesh" id="2_capsule"]
+radius = 0.4
+height = 1.8
+
+[sub_resource type="CapsuleShape3D" id="3_capsule_shape"]
+radius = 0.4
+height = 1.8
+
+[node name="Main" type="Node3D" unique_id=78809575]
+script = ExtResource("1_main")
+
+[node name="WorldEnvironment" type="WorldEnvironment" parent="." unique_id=56837344]
+environment = SubResource("1_env")
+
+[node name="DirectionalLight3D" type="DirectionalLight3D" parent="." unique_id=1493720482]
+transform = Transform3D(0.866, -0.354, 0.354, 0, 0.707, 0.707, -0.5, -0.612, 0.612, 60, 80, 30)
+light_color = Color(1, 0.97, 0.88, 1)
+light_energy = 2.2
+shadow_enabled = true
+
+[node name="SimulationManager" type="Node" parent="." unique_id=2100417324]
+script = ExtResource("2_simman")
+
+[node name="OrbitCamera" type="Camera3D" parent="." unique_id=857752370]
+transform = Transform3D(1, 0, 0, 0, 0.819, 0.574, 0, -0.574, 0.819, 0, 120, 250)
+script = ExtResource("4_camera")
+
+[node name="CityAnchor" type="Node3D" parent="." unique_id=1303024413]
+transform = Transform3D(0.01, 0, 0, 0, 0.01, 0, 0, 0, 0.01, 39.75, 0, 161.5)
+
+[node name="scene" parent="CityAnchor" unique_id=1266270138 instance=ExtResource("5_city")]
+
+[node name="GroundCollider" type="StaticBody3D" parent="." unique_id=593298764]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, -1, 0)
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="GroundCollider" unique_id=75514685]
+shape = SubResource("4_ground_shape")
+
+[node name="BuildingColliders" type="Node3D" parent="." unique_id=1627454949]
+
+[node name="Paramount" type="StaticBody3D" parent="BuildingColliders" unique_id=438858049]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 39.3975, 0.155, 162.7)
+
+[node name="Col" type="CollisionShape3D" parent="BuildingColliders/Paramount" unique_id=2031525899]
+shape = SubResource("box_paramount")
+
+[node name="GunShop" type="StaticBody3D" parent="BuildingColliders" unique_id=101902409]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 40.485, 0.13, 163.5)
+
+[node name="Col" type="CollisionShape3D" parent="BuildingColliders/GunShop" unique_id=1878944703]
+shape = SubResource("box_gunshop")
+
+[node name="Liquor" type="StaticBody3D" parent="BuildingColliders" unique_id=2133761411]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 39.56, 0.095, 163.1)
+
+[node name="Col" type="CollisionShape3D" parent="BuildingColliders/Liquor" unique_id=817772183]
+shape = SubResource("box_liquor")
+
+[node name="Housing" type="StaticBody3D" parent="BuildingColliders" unique_id=291170127]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 40.85, 0.095, 162.9)
+
+[node name="Col" type="CollisionShape3D" parent="BuildingColliders/Housing" unique_id=1959545841]
+shape = SubResource("box_housing")
+
+[node name="Clinic" type="StaticBody3D" parent="BuildingColliders" unique_id=205184163]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 39.19, 0.1, 162.45)
+
+[node name="Col" type="CollisionShape3D" parent="BuildingColliders/Clinic" unique_id=1255279120]
+shape = SubResource("box_clinic")
+
+[node name="Laundrette" type="StaticBody3D" parent="BuildingColliders" unique_id=284758588]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 41.2, 0.11, 163.8)
+
+[node name="Col" type="CollisionShape3D" parent="BuildingColliders/Laundrette" unique_id=470707453]
+shape = SubResource("box_laundrette")
+
+[node name="FishFactory" type="StaticBody3D" parent="BuildingColliders" unique_id=621163641]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 40.495, 0.17, 161.9)
+
+[node name="Col" type="CollisionShape3D" parent="BuildingColliders/FishFactory" unique_id=250280117]
+shape = SubResource("box_fishfactory")
+
+[node name="PawnShop" type="StaticBody3D" parent="BuildingColliders" unique_id=1168258944]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 40.465, 0.075, 162.55)
+
+[node name="Col" type="CollisionShape3D" parent="BuildingColliders/PawnShop" unique_id=1734062814]
+shape = SubResource("box_pawnshop")
+
+[node name="Tsunami" type="Node3D" parent="." unique_id=571603502]
+script = ExtResource("3_tsunami")
+
+[node name="Player" type="CharacterBody3D" parent="." unique_id=1022724878]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 2, 30)
+script = ExtResource("6_player")
+
+[node name="MeshInstance3D" type="MeshInstance3D" parent="Player" unique_id=1571325438]
+mesh = SubResource("2_capsule")
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="Player" unique_id=603494191]
+shape = SubResource("3_capsule_shape")
+
+[node name="CameraArm" type="Node3D" parent="Player" unique_id=109547291]
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 1.6, 0)
+
+[node name="Camera3D" type="Camera3D" parent="Player/CameraArm" unique_id=509083572]
+transform = Transform3D(1, 0, 0, 0, 0.978, 0.208, 0, -0.208, 0.978, 0, 0, 3)
+
+[node name="UI" type="Control" parent="." unique_id=160613780]
+layout_mode = 3
+anchors_preset = 15
+anchor_right = 1.0
+anchor_bottom = 1.0
+grow_horizontal = 2
+grow_vertical = 2
+mouse_filter = 2
+
+[node name="Panel" type="PanelContainer" parent="UI" unique_id=1716120485]
+layout_mode = 1
+offset_left = 16.0
+offset_top = 16.0
+offset_right = 286.0
+offset_bottom = 256.0
+
+[node name="VBox" type="VBoxContainer" parent="UI/Panel" unique_id=1153480576]
+layout_mode = 2
+theme_override_constants/separation = 8
+
+[node name="LblTitle" type="Label" parent="UI/Panel/VBox" unique_id=1199228639]
+layout_mode = 2
+theme_override_font_sizes/font_size = 15
+text = "🌊  Tsunami Simulation"
+
+[node name="HSep" type="HSeparator" parent="UI/Panel/VBox" unique_id=2072411660]
+layout_mode = 2
+
+[node name="LblStatus" type="Label" parent="UI/Panel/VBox" unique_id=1925444947]
+layout_mode = 2
+theme_override_font_sizes/font_size = 14
+text = "Ready"
+
+[node name="LblTime" type="Label" parent="UI/Panel/VBox" unique_id=1562097257]
+layout_mode = 2
+text = "Time: 0.0s"
+
+[node name="LblWave" type="Label" parent="UI/Panel/VBox" unique_id=1037063664]
+layout_mode = 2
+text = "Wave:"
+
+[node name="WaveProgress" type="ProgressBar" parent="UI/Panel/VBox" unique_id=1803635784]
+custom_minimum_size = Vector2(230, 18)
+layout_mode = 2
+
+[node name="HSep2" type="HSeparator" parent="UI/Panel/VBox" unique_id=1138716066]
+layout_mode = 2
+
+[node name="BtnStart" type="Button" parent="UI/Panel/VBox" unique_id=1469460947]
+layout_mode = 2
+text = "▶  Start Wave  (Enter)"
+
+[node name="BtnReset" type="Button" parent="UI/Panel/VBox" unique_id=732003936]
+layout_mode = 2
+disabled = true
+text = "↺  Reset  (R)"
+
+[node name="BtnCam" type="Button" parent="UI/Panel/VBox" unique_id=1987019103]
+layout_mode = 2
+text = "👤 Walk Mode (Tab)"
+
+[node name="LblHints" type="Label" parent="UI/Panel/VBox" unique_id=876730409]
+layout_mode = 2
+theme_override_font_sizes/font_size = 10
+text = "Orbit: drag/scroll  •  Walk: WASD+mouse
+Shift=run  •  Space=jump  •  Tab=switch cam
+Esc=release cursor  •  R=reset"
+autowrap_mode = 3

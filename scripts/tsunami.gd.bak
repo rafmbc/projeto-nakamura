@@ -38,17 +38,12 @@ var _wave_arr_mesh: ArrayMesh
 var _W: int = 80
 var _H: int = 40
 
-# Beach shore particles (wet sand foam wash)
-var _shore_foam_particles: GPUParticles3D
-
 func _ready() -> void:
 	_build_water_plane()
 	_build_wave()
 	_build_spray_particles()
 	_build_beach()
-	_build_shore_foam()
 	_build_wave_collider()
-	_build_blocking_wall()
 	_reset()
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -150,8 +145,6 @@ void fragment() {
 
 # ─────────────────────────────────────────────────────────────────────────────
 #  2. WAVE MESH  — animated breaking crest via vertex rebuild each frame
-#     The wave profile now uses a shoaling curve: the wave rises steeply as
-#     it approaches shallow water (beach effect), then curls and breaks.
 # ─────────────────────────────────────────────────────────────────────────────
 
 func _build_wave() -> void:
@@ -172,33 +165,21 @@ func _build_wave() -> void:
 
 			var y: float
 			var z: float
+			var profile: float = sin(t_h * PI * 0.5)
+			var front_bias: float = pow(t_h, 1.25)
+			y = wave_height * (0.28 + 0.72 * profile) * (0.82 + 0.18 * front_bias)
+			z = wave_depth * (0.19 + 0.81 * pow(t_h, 1.05))
 
-			# ── Realistic shoaling-inspired wave profile ──────────────────
-			# Lower half: gradual underwater slope rises from seafloor
-			# Upper 40%: steep face as the wave "piles up" over the shoal
-			# Top crest: overhanging curl with pronounced forward lean
-			if t_h < 0.45:
-				# Base / trough: slow, rounded rise
-				var base_curve: float = pow(t_h / 0.45, 1.8)
-				y = wave_height * 0.28 * base_curve
-				z = wave_depth * 0.22 * pow(t_h / 0.45, 1.1)
-			elif t_h < 0.75:
-				# Face: steep acceleration — this is where the wave "stands up"
-				var face_t: float = (t_h - 0.45) / 0.30
-				y = wave_height * (0.28 + 0.52 * pow(face_t, 1.6))
-				z = wave_depth * (0.22 + 0.40 * pow(face_t, 1.3))
-			else:
-				# Crest: rapid surge upward and forward, building the overhang
-				var crest_t: float = (t_h - 0.75) / 0.25
-				y = wave_height * (0.80 + 0.24 * pow(crest_t, 1.8))
-				z = wave_depth * (0.62 + 0.38 * pow(crest_t, 1.2))
+			if t_h > 0.68:
+				var crest_boost: float = pow((t_h - 0.68) / 0.32, 2.2)
+				y += crest_boost * wave_height * 0.16
+				z += crest_boost * wave_depth * 0.09
 
 			y *= (0.58 + 0.42 * sw)
 			z *= sw
 
 			_base_verts.append(Vector3(x, y, z))
 
-			# Normals follow the tangent of the profile curve
 			var dz_val: float
 			if t_h < 0.55:
 				dz_val = wave_depth * sw * 3.0 * pow(t_h, 2.0) * 0.15
@@ -416,325 +397,172 @@ func _build_spray_particles() -> void:
 	add_child(_spray_particles)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  3b. BEACH  — real shoreline with sand texture, wet zone, berm, and surge shelf
-#
-#  The shore is split into THREE zones across its Z extent:
-#    • Surge shelf   (-185 → -155): gently-angled wet sand just below wave break
-#                                   point; rises smoothly from the water plane
-#    • Beach face    (-155 → -80):  steeper slope (the foreshore); where the
-#                                   swash runs up and back
-#    • Berm / dune   (-80  → -20):  gentler upper beach, dune crests with noise,
-#                                   transitions to city ground level
-#
-#  Sand texture: Ground054 PBR set (Color, NormalGL, Roughness)
-#  UVs tile the world-space X so sand grain scale stays constant, while V
-#  tracks normalized beach depth so wet-band blending works correctly.
+#  3b. BEACH  — procedural sand mesh with wet/foam zones and collision heightmap
 # ─────────────────────────────────────────────────────────────────────────────
 
 func _build_beach() -> void:
 	var beach_mesh_inst := MeshInstance3D.new()
-	var beach_arr_mesh  := ArrayMesh.new()
-
-	# World-space extents
-	var beach_width:   float = wave_width + 60.0   # slightly wider than wave
-	var beach_z_start: float = -500          # deep end (below water plane)
-	var beach_z_end:   float = 0               # city edge
-	var beach_length:  float = beach_z_end - beach_z_start   # ~172 units
-
-	var subdiv_w: int = 100
-	var subdiv_d: int = 60
-
-	var verts   := PackedVector3Array()
-	var norms   := PackedVector3Array()
-	var uvs     := PackedVector2Array()
+	var beach_arr_mesh := ArrayMesh.new()
+	
+	# Beach dimensions: Z from -185 (ocean) to -20 (city), X across wave width
+	var beach_width: float = wave_width + 50.0
+	var beach_length: float = 165.0
+	var beach_subdiv_w: int = 80
+	var beach_subdiv_d: int = 40
+	
+	# Procedural terrain noise for dune variation
+	var _dune_noise := _make_noise_tex(0.008, 3, 2.0, false)
+	
+	var verts := PackedVector3Array()
+	var norms := PackedVector3Array()
+	var uvs := PackedVector2Array()
 	var indices := PackedInt32Array()
-
-	# Inline noise helper (no texture needed at mesh-build time)
-	var rng := RandomNumberGenerator.new()
-	rng.seed = 42
-
-	for row in range(subdiv_d + 1):
-		var t_d: float = float(row) / float(subdiv_d)   # 0 = ocean end, 1 = city end
-		var z: float   = lerp(beach_z_start, beach_z_end, t_d)
-
-		for col in range(subdiv_w + 1):
-			var t_w: float = float(col) / float(subdiv_w)
-			var x: float   = (t_w - 0.5) * beach_width
-
-			# ── Height profile across the three beach zones ───────────────
-			var y: float
-			if t_d < 0.18:
-				# Surge shelf: very gentle, submerged / barely above water
-				# Smoothly connects to the water plane at y ≈ -0.5
-				y = lerp(-1.2, 0.3, pow(t_d / 0.18, 1.5))
-			elif t_d < 0.62:
-				# Beach face: moderate slope, the main visible sand
-				var face_t: float = (t_d - 0.18) / 0.44
-				y = lerp(0.3, 2.8, pow(face_t, 0.85))
-			else:
-				# Berm / dune zone: flattens then has gentle dune crest
-				var berm_t: float = (t_d - 0.62) / 0.38
-				var berm_base: float = lerp(1.5, 4.5, berm_t)
-				# Dune undulation across X
-				var dune_x: float  = sin(x * 0.018 + 1.4) * 0.55
-				var dune_z: float  = sin(berm_t * PI * 1.7) * 0.65
-				y = berm_base + dune_x + dune_z
-
-			# Small high-frequency bumps for natural sand texture feel
-			var fine_bump: float = sin(x * 0.12) * cos(z * 0.09) * 0.12 * clamp(t_d, 0.0, 1.0)
-			y += fine_bump
-
+	var heights := PackedFloat32Array()  # For HeightMapShape3D collision
+	
+	# Build beach mesh grid
+	for row in range(beach_subdiv_d + 1):
+		var t_d: float = float(row) / float(beach_subdiv_d)  # 0 (ocean) to 1 (city)
+		var z: float = lerp(-185.0, -20.0, t_d)
+		
+		for col in range(beach_subdiv_w + 1):
+			var t_w: float = float(col) / float(beach_subdiv_w)
+			var x: float = (t_w - 0.5) * beach_width
+			
+			# Height profile: sine curve for beach shape
+			var profile: float = sin(t_d * PI) * 2.5
+			
+			# Add dune bumps via noise (scale down so they don't interfere too much)
+			var dune_scale: float = 0.8 * (0.6 + 0.4 * sin(t_d * PI))
+			var dune_bump: float = (FastNoiseLite.new().get_noise_2d(x * 0.04, z * 0.04) + 1.0) * 0.5
+			var y: float = profile + dune_bump * dune_scale - 0.3
+			
+			# Ocean edge dips below water so it blends seamlessly
+			if t_d < 0.05:
+				y -= (0.05 - t_d) * 1.2
+			
 			verts.append(Vector3(x, y, z))
-
-			# Smooth normal approximation (recalculated after positions are known)
+			heights.append(y)
+			
+			# Normal is mostly up, with slight variation from noise
 			norms.append(Vector3(0, 1, 0))
-
-			# UVs:
-			#   U = world X / uv_tile_size  → sand grain tiling matches real world scale
-			#   V = t_d                     → used for wet-band and zone blending
-			var uv_tile: float = 22.0
-			uvs.append(Vector2(x / uv_tile, t_d))
-
-	# Recalculate smooth normals from neighbour triangles
-	var normal_accum := PackedVector3Array()
-	normal_accum.resize(verts.size())
-	for i in range(verts.size()):
-		normal_accum[i] = Vector3.ZERO
-
-	for row in range(subdiv_d):
-		for col in range(subdiv_w):
-			var i00: int = row       * (subdiv_w + 1) + col
-			var i10: int = row       * (subdiv_w + 1) + col + 1
-			var i01: int = (row + 1) * (subdiv_w + 1) + col
-			var i11: int = (row + 1) * (subdiv_w + 1) + col + 1
-			# Triangle A
-			var ea: Vector3 = verts[i10] - verts[i00]
-			var eb: Vector3 = verts[i01] - verts[i00]
-			var na: Vector3 = ea.cross(eb)
-			normal_accum[i00] += na
-			normal_accum[i10] += na
-			normal_accum[i01] += na
-			# Triangle B
-			var ec: Vector3 = verts[i01] - verts[i11]
-			var ed: Vector3 = verts[i10] - verts[i11]
-			var nb: Vector3 = ec.cross(ed)
-			normal_accum[i11] += nb
-			normal_accum[i10] += nb
-			normal_accum[i01] += nb
-
-	for i in range(norms.size()):
-		norms[i] = normal_accum[i].normalized() if normal_accum[i].length_squared() > 0.0001 else Vector3.UP
-
-	# Indices
-	for row in range(subdiv_d):
-		for col in range(subdiv_w):
-			var tl: int = row * (subdiv_w + 1) + col
-			indices.append_array([tl, tl + (subdiv_w + 1), tl + 1,
-								  tl + 1, tl + (subdiv_w + 1), tl + (subdiv_w + 2)])
-
+			
+			# UV maps to beach zones: wet (y=0), foam (0.03), dry (>0.22)
+			uvs.append(Vector2(t_w, t_d))
+	
+	# Build triangle indices
+	for row in range(beach_subdiv_d):
+		for col in range(beach_subdiv_w):
+			var tl: int = row * (beach_subdiv_w + 1) + col
+			indices.append_array([tl, tl + (beach_subdiv_w + 1), tl + 1, 
+								  tl + 1, tl + (beach_subdiv_w + 1), tl + (beach_subdiv_w + 2)])
+	
+	# Assemble mesh
 	var arrays: Array = []
 	arrays.resize(Mesh.ARRAY_MAX)
 	arrays[Mesh.ARRAY_VERTEX] = verts
 	arrays[Mesh.ARRAY_NORMAL] = norms
 	arrays[Mesh.ARRAY_TEX_UV] = uvs
-	arrays[Mesh.ARRAY_INDEX]  = indices
+	arrays[Mesh.ARRAY_INDEX] = indices
 	beach_arr_mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
-
-	# ── Beach shader ─────────────────────────────────────────────────────────
-	#  Samples the Ground054 PBR sand textures.
-	#  The V coordinate (t_d) drives zone blending:
-	#    0.00–0.03  → foam/swash line (white froth at wave contact)
-	#    0.03–0.18  → wet sand     (darker, more saturated, lower roughness)
-	#    0.18–1.00  → dry sand     (full Ground054 albedo & roughness)
-	# ─────────────────────────────────────────────────────────────────────────
+	
+	# Beach shader: uses imported PBR sand textures with depth-based blending
 	var beach_shader := Shader.new()
 	beach_shader.code = """
 shader_type spatial;
-render_mode blend_mix, diffuse_burley, specular_schlick_ggx, depth_draw_opaque;
+render_mode blend_mix, diffuse_burley, specular_schlick_ggx;
 
-// ── Sand PBR textures (Ground054 set) ──────────────────────────────────────
-uniform sampler2D sand_albedo    : source_color, repeat_enable;
-uniform sampler2D sand_normal    : hint_normal,  repeat_enable;
+uniform sampler2D sand_albedo : source_color, repeat_enable;
+uniform sampler2D sand_normal : hint_normal, repeat_enable;
 uniform sampler2D sand_roughness : repeat_enable;
+uniform vec3 fallback_color : source_color = vec3(0.76, 0.70, 0.55);
+uniform bool use_sand_texture = true;
 
-// ── Fallback colour used if textures fail to load ─────────────────────────
-uniform vec3  fallback_dry  : source_color = vec3(0.78, 0.69, 0.50);
-uniform vec3  fallback_wet  : source_color = vec3(0.55, 0.47, 0.32);
-uniform bool  use_sand_texture = true;
-
-// ── Zone boundaries (V = t_d) ─────────────────────────────────────────────
-uniform float foam_band    : hint_range(0.0, 0.15) = 0.04;
-uniform float wet_end      : hint_range(0.0, 0.40) = 0.22;
-
-// ── Visual tweaks ─────────────────────────────────────────────────────────
-uniform vec4  foam_col     : source_color = vec4(0.90, 0.95, 1.00, 0.85);
-uniform float foam_rough   : hint_range(0.0, 1.0) = 0.85;
-uniform float wet_roughness_scale : hint_range(0.0, 1.0) = 0.42; // wet sand less rough
-uniform float wet_darken         : hint_range(0.0, 1.0) = 0.65; // wet sand multiplier
-uniform float normal_depth       : hint_range(0.0, 3.0) = 1.4;
-
-// Subtle wave-wash animation on the wet zone
-uniform float wash_speed  = 0.35;
+uniform float wet_band : hint_range(0.0, 0.3) = 0.08;
+uniform float foam_band : hint_range(0.0, 0.1) = 0.035;
+uniform vec3 foam_col : source_color = vec3(0.88, 0.94, 0.98);
+uniform float foam_roughness : hint_range(0.5, 1.0) = 0.88;
+uniform float sand_uv_scale = 4.0;
 
 void fragment() {
-	float v = UV.y;               // 0 = ocean, 1 = city
-	vec2  sand_uv = UV;           // U already world-space tiled in GDScript
-
-	// ── Animated foam-wash edge on the wet zone ──────────────────────────
-	float wash = sin(v * 28.0 + TIME * wash_speed) * 0.012;
-	float eff_v = v + wash;
-
-	// ── Zone masks with soft transitions ─────────────────────────────────
-	float foam_mask = 1.0 - smoothstep(0.0, foam_band, eff_v);
-	float wet_mask  = smoothstep(foam_band, foam_band + 0.03, eff_v)
-	                * (1.0 - smoothstep(wet_end - 0.04, wet_end, eff_v));
-	float dry_mask  = smoothstep(wet_end - 0.06, wet_end, eff_v);
-
-	if (use_sand_texture) {
-		// Sample Ground054 textures
-		vec3  sand_col   = texture(sand_albedo,    sand_uv).rgb;
-		vec3  sand_norm  = texture(sand_normal,    sand_uv).rgb;
-		float sand_rough = texture(sand_roughness, sand_uv).r;
-
-		// Wet sand: darken and saturate, reduce roughness (wet = shiny)
-		vec3 wet_col   = sand_col * wet_darken;
-		float wet_rough = sand_rough * wet_roughness_scale;
-
-		// Blend zones
-		vec3  final_col   = mix(sand_col, wet_col,      wet_mask);
-		final_col         = mix(final_col, foam_col.rgb, foam_mask);
-
-		float final_rough = mix(sand_rough, wet_rough,  wet_mask);
-		final_rough       = mix(final_rough, foam_rough, foam_mask);
-
-		ALBEDO      = final_col;
-		NORMAL_MAP  = sand_norm;
-		NORMAL_MAP_DEPTH = normal_depth * dry_mask + 0.5 * (1.0 - dry_mask);
-		ROUGHNESS   = final_rough;
-		ALPHA       = mix(1.0, foam_col.a, foam_mask);
+	float depth_in_beach = UV.y;
+	vec2 sand_uv = UV * vec2(sand_uv_scale, 1.0);
+	
+	if (depth_in_beach < foam_band) {
+		ALBEDO = foam_col;
+		ROUGHNESS = foam_roughness;
+	} else if (use_sand_texture) {
+		vec3 sand_color = texture(sand_albedo, sand_uv).rgb;
+		ALBEDO = sand_color;
+		NORMAL_MAP = texture(sand_normal, sand_uv).rgb;
+		ROUGHNESS = texture(sand_roughness, sand_uv).r;
+		if (depth_in_beach < wet_band) {
+			ALBEDO *= 0.85;
+		}
 	} else {
-		// Fallback (no textures)
-		vec3 fc = mix(fallback_dry, fallback_wet, wet_mask);
-		fc       = mix(fc, foam_col.rgb,           foam_mask);
-		ALBEDO    = fc;
-		ROUGHNESS = mix(0.75, wet_roughness_scale, wet_mask);
-		ROUGHNESS = mix(ROUGHNESS, foam_rough,     foam_mask);
+		ALBEDO = fallback_color;
+		NORMAL_MAP = vec3(0.5, 0.5, 1.0);
+		ROUGHNESS = 0.6;
 	}
-
 	METALLIC = 0.0;
 }
 """
-
-	# Load the Ground054 PBR sand textures
-	var sand_albedo   = ResourceLoader.load("res://textures/sand/Ground054_1K-JPG_Color.jpg")
-	var sand_normal   = ResourceLoader.load("res://textures/sand/Ground054_1K-JPG_NormalGL.jpg")
-	var sand_rough    = ResourceLoader.load("res://textures/sand/Ground054_1K-JPG_Roughness.jpg")
-	var has_textures: bool = sand_albedo != null and sand_normal != null and sand_rough != null
-
+	
+	var sand_albedo = ResourceLoader.load("res://textures/sand/Ground054_1K-JPG_Color.jpg")
+	var sand_normal = ResourceLoader.load("res://textures/sand/Ground054_1K-JPG_NormalGL.jpg")
+	var sand_rough = ResourceLoader.load("res://textures/sand/Ground054_1K-JPG_Roughness.jpg")
+	
 	var beach_mat := ShaderMaterial.new()
 	beach_mat.shader = beach_shader
-	if has_textures:
-		beach_mat.set_shader_parameter("sand_albedo",    sand_albedo)
-		beach_mat.set_shader_parameter("sand_normal",    sand_normal)
-		beach_mat.set_shader_parameter("sand_roughness", sand_rough)
-	beach_mat.set_shader_parameter("use_sand_texture",       has_textures)
-	beach_mat.set_shader_parameter("foam_band",               0.04)
-	beach_mat.set_shader_parameter("wet_end",                 0.22)
-	beach_mat.set_shader_parameter("foam_col",                Color(0.90, 0.95, 1.0, 0.85))
-	beach_mat.set_shader_parameter("foam_rough",              0.85)
-	beach_mat.set_shader_parameter("wet_roughness_scale",     0.42)
-	beach_mat.set_shader_parameter("wet_darken",              0.65)
-	beach_mat.set_shader_parameter("normal_depth",            1.4)
-	beach_mat.set_shader_parameter("wash_speed",              0.35)
-	beach_mat.set_shader_parameter("fallback_dry",  Color(0.78, 0.69, 0.50))
-	beach_mat.set_shader_parameter("fallback_wet",  Color(0.55, 0.47, 0.32))
-
+	beach_mat.set_shader_parameter("sand_albedo", sand_albedo if sand_albedo else Texture2D.new())
+	beach_mat.set_shader_parameter("sand_normal", sand_normal if sand_normal else Texture2D.new())
+	beach_mat.set_shader_parameter("sand_roughness", sand_rough if sand_rough else Texture2D.new())
+	beach_mat.set_shader_parameter("use_sand_texture", sand_albedo != null and sand_normal != null and sand_rough != null)
+	beach_mat.set_shader_parameter("wet_band", 0.08)
+	beach_mat.set_shader_parameter("foam_band", 0.035)
+	beach_mat.set_shader_parameter("foam_col", Color(0.88, 0.94, 0.98))
+	beach_mat.set_shader_parameter("foam_roughness", 0.88)
+	beach_mat.set_shader_parameter("sand_uv_scale", 4.0)
+	beach_mat.set_shader_parameter("fallback_color", Color(0.76, 0.70, 0.55))
 	beach_arr_mesh.surface_set_material(0, beach_mat)
+	
 	beach_mesh_inst.mesh = beach_arr_mesh
 	add_child(beach_mesh_inst)
-
-	# ── Collision heightmap so the player can walk the beach ──────────────
-	var beach_collider  := StaticBody3D.new()
+	
+	# Beach collision — HeightMapShape3D for realistic walking
+	var beach_collider := StaticBody3D.new()
 	var beach_col_shape := CollisionShape3D.new()
-	var heightmap       := HeightMapShape3D.new()
-
+	var heightmap := HeightMapShape3D.new()
+	
+	# HeightMapShape3D needs a 2D array of heights
 	var hmap_data := PackedFloat32Array()
-	hmap_data.resize(verts.size())
-	for i in range(verts.size()):
-		hmap_data[i] = verts[i].y
-
-	heightmap.map_data  = hmap_data
-	heightmap.map_width = subdiv_w + 1
-	heightmap.map_depth = subdiv_d + 1
-
-	beach_col_shape.shape = heightmap
+	for y in range(beach_subdiv_d + 1):
+		for x in range(beach_subdiv_w + 1):
+			var idx: int = y * (beach_subdiv_w + 1) + x
+			hmap_data.append(heights[idx])
+	
+	heightmap.map_data = hmap_data
+	heightmap.map_width = beach_subdiv_w + 1
+	# Scale the heightmap to match world coords
 	beach_col_shape.transform = Transform3D(
-		Basis().scaled(Vector3(beach_width / float(subdiv_w), 1.0, beach_length / float(subdiv_d))),
-		Vector3(-beach_width * 0.5, -0.1, beach_z_start)
+		Basis().scaled(Vector3(beach_width / float(beach_subdiv_w), 1.0, beach_length / float(beach_subdiv_d))),
+		Vector3(-beach_width * 0.5, 0, -185.0)
 	)
+	beach_col_shape.shape = heightmap
 	beach_collider.add_child(beach_col_shape)
 	add_child(beach_collider)
 
 # ─────────────────────────────────────────────────────────────────────────────
-#  3c. SHORE FOAM PARTICLES  — scattered foam on the wet sand as wave washes in
-# ─────────────────────────────────────────────────────────────────────────────
-
-func _build_shore_foam() -> void:
-	_shore_foam_particles = GPUParticles3D.new()
-	_shore_foam_particles.amount = 200
-	_shore_foam_particles.lifetime = 3.5
-	_shore_foam_particles.emitting = false
-	_shore_foam_particles.one_shot = false
-	_shore_foam_particles.explosiveness = 0.0
-	_shore_foam_particles.visibility_aabb = AABB(
-		Vector3(-wave_width * 0.6, -1, -30),
-		Vector3(wave_width * 1.2, 4, 80)
-	)
-
-	var pm := ParticleProcessMaterial.new()
-	pm.emission_shape        = ParticleProcessMaterial.EMISSION_SHAPE_BOX
-	pm.emission_box_extents  = Vector3(wave_width * 0.48, 0.3, 30.0)
-	pm.direction             = Vector3(0.0, 0.1, 1.0)
-	pm.spread                = 15.0
-	pm.initial_velocity_min  = 1.5
-	pm.initial_velocity_max  = 4.0
-	pm.gravity               = Vector3(0, -4, 0)
-	pm.scale_min             = 0.6
-	pm.scale_max             = 2.2
-	pm.color                 = Color(0.92, 0.97, 1.0, 0.55)
-
-	var fade_curve := Curve.new()
-	fade_curve.add_point(Vector2(0.0, 0.0))
-	fade_curve.add_point(Vector2(0.15, 1.0))
-	fade_curve.add_point(Vector2(0.75, 0.8))
-	fade_curve.add_point(Vector2(1.0, 0.0))
-	var alpha_tex := CurveTexture.new()
-	alpha_tex.curve = fade_curve
-	pm.alpha_curve = alpha_tex
-
-	_shore_foam_particles.process_material = pm
-
-	var qmesh := QuadMesh.new()
-	qmesh.size = Vector2(1.2, 0.4)
-	var qmat := StandardMaterial3D.new()
-	qmat.albedo_color      = Color(0.90, 0.96, 1.0, 0.60)
-	qmat.transparency      = BaseMaterial3D.TRANSPARENCY_ALPHA
-	qmat.billboard_mode    = BaseMaterial3D.BILLBOARD_ENABLED
-	qmat.emission_enabled  = true
-	qmat.emission          = Color(0.75, 0.88, 0.95)
-	qmat.emission_energy_multiplier = 0.08
-	qmesh.surface_set_material(0, qmat)
-	_shore_foam_particles.draw_pass_1 = qmesh
-
-	add_child(_shore_foam_particles)
-
-# ─────────────────────────────────────────────────────────────────────────────
 #  4. WAVE COLLIDER  — stepped ramp of boxes that matches the wave face slope
+#     Each box covers one vertical section of the wave so the push zone
+#     actually lines up with the visible water face.
 # ─────────────────────────────────────────────────────────────────────────────
 
 func _build_wave_collider() -> void:
 	_wave_collider = StaticBody3D.new()
 
+	# Use 4 stacked boxes to approximate the sloped wave face
+	# Section 0: base/foot of wave  — wide, shallow, close to z=0
+	# Section 3: crest              — narrower z-offset, highest y
 	var sections: Array = [
 		# [half_width_factor, height_centre_y, z_offset, box_half_height, box_half_z]
 		[0.50, wave_height * 0.10, wave_depth * 0.08, wave_height * 0.14, wave_depth * 0.10],
@@ -764,11 +592,10 @@ func _reset() -> void:
 	_elapsed = 0.0
 	_hit_triggered = false
 	_apply_wave_transform()
-	if _wave_body:             _wave_body.scale             = Vector3(1, 0.0, 1)
-	if _foam_top:              _foam_top.scale               = Vector3(1, 0.0, 1)
-	if _spray_particles:       _spray_particles.emitting       = false
-	if _shore_foam_particles:  _shore_foam_particles.emitting  = false
-	if _wave_collider:         _wave_collider.visible          = false
+	if _wave_body:       _wave_body.visible       = false
+	if _foam_top:        _foam_top.visible         = false
+	if _spray_particles: _spray_particles.emitting = false
+	if _wave_collider:   _wave_collider.visible    = false
 	if _wave_shader_mat:
 		_wave_shader_mat.set_shader_parameter("break_t", 0.0)
 
@@ -778,25 +605,15 @@ func _apply_wave_transform() -> void:
 	if _foam_top:      _foam_top.position      = pos
 	if _spray_particles:
 		_spray_particles.position = Vector3(0, wave_height * 0.9, _wave_z + wave_depth * 0.8)
-	# Shore foam emitter tracks the wave base, near the waterline
-	if _shore_foam_particles:
-		_shore_foam_particles.position = Vector3(0, 0.5, _wave_z + wave_depth * 0.5)
 	if _wave_collider: _wave_collider.position = pos
 
 func start() -> void:
 	if _active: return
+	_reset()
 	_active = true
-	_elapsed = 0.0
-	_wave_z = -start_distance
-	_hit_triggered = false
-	_apply_wave_transform()
-	if _wave_body:
-		_wave_body.visible = true
-		_wave_body.scale   = Vector3(1, 0, 1)
-	if _foam_top:
-		_foam_top.visible = true
-		_foam_top.scale   = Vector3(1, 0, 1)
-	if _wave_collider: _wave_collider.visible = true
+	_wave_body.visible       = true
+	_foam_top.visible        = true
+	_wave_collider.visible   = true
 	emit_signal("wave_started")
 
 func reset() -> void:
@@ -808,12 +625,6 @@ func _process(delta: float) -> void:
 	_elapsed += delta
 	_wave_z += wave_speed * delta
 	_apply_wave_transform()
-	
-	# ── Wave rises from water: scale Y from 0→1 over first 3 seconds ────────
-	var rise_t: float = clamp(_elapsed / 3.0, 0.0, 1.0)
-	var rise_scale: float = pow(rise_t, 0.5)   # fast at start, eases in
-	if _wave_body: _wave_body.scale = Vector3(1.0, rise_scale, 1.0)
-	if _foam_top:  _foam_top.scale  = Vector3(1.0, rise_scale, 1.0)
 
 	# ── Breaking animation ────────────────────────────────────────────────────
 	var break_t: float = clamp((_wave_z + 60.0) / 120.0, 0.0, 1.0)
@@ -829,11 +640,6 @@ func _process(delta: float) -> void:
 	if _spray_particles and _spray_particles.emitting != spray_active:
 		_spray_particles.emitting = spray_active
 
-	# ── Shore foam activates as wave approaches the beach zone ───────────────
-	var shore_active: bool = _wave_z > -start_distance * 0.4 and _wave_z < 80.0
-	if _shore_foam_particles and _shore_foam_particles.emitting != shore_active:
-		_shore_foam_particles.emitting = shore_active
-
 	# ── Signals ───────────────────────────────────────────────────────────────
 	if not _hit_triggered and _wave_z > -20.0:
 		_hit_triggered = true
@@ -844,8 +650,7 @@ func _process(delta: float) -> void:
 		_wave_body.visible       = false
 		_foam_top.visible        = false
 		_wave_collider.visible   = false
-		if _spray_particles:      _spray_particles.emitting      = false
-		if _shore_foam_particles: _shore_foam_particles.emitting = false
+		if _spray_particles: _spray_particles.emitting = false
 
 # Rebuild only the vertex buffer each frame to animate the breaking curl
 func _update_wave_verts(break_t: float) -> void:
@@ -882,28 +687,3 @@ func get_wave_z() -> float:
 
 func get_wave_progress() -> float:
 	return clamp((_wave_z + start_distance) / (start_distance * 2.0 + 100.0), 0.0, 1.0)
-	
-func _build_blocking_wall() -> void:
-	var wall := MeshInstance3D.new()
-	var m := BoxMesh.new()
-	m.size = Vector3(wave_width, 12.0, 4.0)   # wide, 12 units tall, 4 thick
-	wall.mesh = m
-	
-	var mat := StandardMaterial3D.new()
-	mat.albedo_color = Color(0.55, 0.50, 0.46)   # concrete grey
-	mat.roughness = 0.9
-	m.surface_set_material(0, mat)
-
-	# Position just in front of the city, at ground level
-	wall.position = Vector3(0, 6.0, 10.0)   # Y=6 centres it so base is at Y=0
-	add_child(wall)
-
-	# Collision
-	var body := StaticBody3D.new()
-	var cs := CollisionShape3D.new()
-	var box := BoxShape3D.new()
-	box.size = Vector3(wave_width, 12.0, 4.0)
-	cs.shape = box
-	body.position = Vector3(0, 6.0, 10.0)
-	body.add_child(cs)
-	add_child(body)
